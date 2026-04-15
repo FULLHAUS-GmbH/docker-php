@@ -1,0 +1,72 @@
+name: Build and Push Docker Images
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  schedule:
+    # Weekly rebuild to pick up base image security updates (Monday 04:00 UTC)
+    - cron: "0 4 * * 1"
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        php-version: ["8.4", "8.5"]
+
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Generate date tag
+        id: date
+        run: echo "date=$(date +'%Y%m%d')" >> "$GITHUB_OUTPUT"
+
+      - name: Generate Docker tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            # Rolling tag: 8.X-fpm-nginx-alpine
+            type=raw,value=${{ matrix.php-version }}-fpm-nginx-alpine
+            # Date-stamped tag: 8.X-fpm-nginx-alpine-YYYYMMDD
+            type=raw,value=${{ matrix.php-version }}-fpm-nginx-alpine-${{ steps.date.outputs.date }}
+            # latest only for PHP 8.5
+            type=raw,value=latest,enable=${{ matrix.php-version == '8.5' }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64,linux/arm64
+          build-args: PHP_VERSION=${{ matrix.php-version }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=${{ matrix.php-version }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.php-version }}
